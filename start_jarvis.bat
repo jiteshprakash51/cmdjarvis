@@ -1,83 +1,87 @@
 @echo off
+setlocal EnableDelayedExpansion
 title JARVIS - Windows AI CMD Assistant
-cd /d "%~dp0"
 color 0A
 
-echo.
+:: ==================================================
+:: AUTO ELEVATE TO ADMIN
+:: ==================================================
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\"' -Verb RunAs"
+    exit /b
+)
+
+:: ==================================================
+:: GET FULL ABSOLUTE PATH OF THIS BAT FILE
+:: ==================================================
+set "BASE_DIR=%~dp0"
+for %%i in ("%BASE_DIR%.") do set "BASE_DIR=%%~fi"
+
+:: Move into project directory safely
+cd /d "%BASE_DIR%"
+
 echo ==========================================
-echo         JARVIS - Auto Setup Launcher
+echo        JARVIS - Smart Auto Launcher
 echo ==========================================
 echo.
 
-:: -------------------------------
-:: STEP 1 - Check Python
-:: -------------------------------
-echo [*] Checking Python installation...
-python --version >nul 2>&1
+:: ==================================================
+:: STEP 1 - CHECK PYTHON
+:: ==================================================
+where python >nul 2>&1
 
 if %ERRORLEVEL% NEQ 0 (
-    echo [!] Python not found. Installing Python automatically...
-    echo.
+    echo [*] Python not found. Installing latest version...
 
-    set PYTHON_URL=https://www.python.org/ftp/python/3.11.8/python-3.11.8-amd64.exe
-    set PYTHON_INSTALLER=python_installer.exe
+    set "PYTHON_URL=https://www.python.org/ftp/python/3.14.2/python-3.14.2-amd64.exe"
+    set "PYTHON_INSTALLER=%TEMP%\python_installer.exe"
 
-    echo [*] Downloading Python...
-    powershell -Command "Invoke-WebRequest -Uri %PYTHON_URL% -OutFile %PYTHON_INSTALLER%"
+    powershell -Command "Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_INSTALLER%'"
 
-    if not exist %PYTHON_INSTALLER% (
-        echo [ERROR] Failed to download Python.
-        pause
+    if not exist "%PYTHON_INSTALLER%" (
+        echo [ERROR] Download failed.
+        timeout /t 5 >nul
         exit /b 1
     )
 
-    echo [*] Installing Python silently...
-    %PYTHON_INSTALLER% /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
-
-    echo [*] Cleaning installer...
-    del %PYTHON_INSTALLER%
-
-    echo [*] Refreshing environment variables...
-    setx PATH "%PATH%;C:\Program Files\Python311\;C:\Program Files\Python311\Scripts\"
-
-    echo [✓] Python installation completed.
-    echo.
+    "%PYTHON_INSTALLER%" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
+    del "%PYTHON_INSTALLER%"
 )
 
-:: -------------------------------
-:: STEP 2 - Upgrade pip
-:: -------------------------------
-echo [*] Upgrading pip...
-python -m ensurepip --upgrade
-python -m pip install --upgrade pip
-
-:: -------------------------------
-:: STEP 3 - Install Dependencies
-:: -------------------------------
-echo [*] Installing project dependencies...
-python -m pip install -r requirements.txt
-
+:: Re-check python
+where python >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Failed to install dependencies.
-    pause
+    echo [ERROR] Python installation failed.
+    timeout /t 5 >nul
     exit /b 1
 )
 
-:: -------------------------------
-:: STEP 4 - Launch JARVIS
-:: -------------------------------
-echo.
-echo ==========================================
-echo           Launching JARVIS...
-echo ==========================================
-echo.
-
-python main.py
-
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo [!] JARVIS exited with error code %ERRORLEVEL%
+:: ==================================================
+:: STEP 2 - INSTALL DEPENDENCIES
+:: ==================================================
+if exist "%BASE_DIR%\requirements.txt" (
+    python -m pip install --upgrade pip >nul 2>&1
+    python -m pip install -r "%BASE_DIR%\requirements.txt" >nul 2>&1
 )
 
-pause
-exit /b %ERRORLEVEL%
+:: ==================================================
+:: STEP 3 - FIND AND RUN main.py (PATH SAFE)
+:: ==================================================
+set "MAIN_FILE=%BASE_DIR%\main.py"
+
+if exist "%MAIN_FILE%" (
+    cls
+    echo ==========================================
+    echo           Launching JARVIS...
+    echo ==========================================
+    echo.
+    python "%MAIN_FILE%"
+) else (
+    echo [ERROR] main.py not found at:
+    echo %MAIN_FILE%
+    timeout /t 5 >nul
+)
+
+endlocal
+exit
