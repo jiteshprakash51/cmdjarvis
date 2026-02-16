@@ -334,17 +334,30 @@ def existing_user_login(authenticator: Authenticator, user_store: UserStore) -> 
     if not user_data:
         raise RuntimeError("User profile is missing or corrupted.")
 
-    verified = authenticator.authenticate_password(
-        lambda password: user_store.verify_password(
-            password,
+    entered_password = None
+    verified = False
+
+    for attempt in range(1, 4):
+        try:
+            entered_password = authenticator._prompt_masked("Enter password: ")
+        except (EOFError, KeyboardInterrupt):
+            raise RuntimeError("Access denied. Exiting.")
+        if user_store.verify_password(
+            entered_password,
             user_data["password_hash"],
             user_data["password_salt"],
-        )
-    )
+        ):
+            verified = True
+            break
+        print(f"Authentication failed ({attempt}/3)")
+
     if not verified:
         raise RuntimeError("Access denied. Exiting.")
 
-    api_key = user_data["api_key"].strip()
+    api_key = user_store.get_decrypted_api_key(entered_password)
+    if not api_key:
+        raise RuntimeError("Failed to decrypt API key. It may be corrupted.")
+
     print(Fore.CYAN + "Checking stored API key with OpenRouter..." + Style.RESET_ALL)
     client = OpenRouterClient(api_key=api_key)
     asyncio.run(client.validate_api_key())
@@ -366,7 +379,28 @@ def verify_current_password(authenticator: Authenticator, user_store: UserStore,
 
 def handle_change_api_key(authenticator: Authenticator, user_store: UserStore, logger_obj: ActivityLogger) -> str:
     print(Fore.YELLOW + "Change API key requested." + Style.RESET_ALL)
-    if not verify_current_password(authenticator, user_store, "Enter current password to change API key: "):
+    
+    user_data = user_store.load() or {}
+    password_hash = user_data.get("password_hash", "")
+    password_salt = user_data.get("password_salt", "")
+    if not password_hash or not password_salt:
+        print(Fore.RED + "User profile is missing." + Style.RESET_ALL)
+        return user_store.get_decrypted_api_key("") or ""
+    
+    current_password = None
+    password_verified = False
+    for attempt in range(1, 4):
+        try:
+            current_password = authenticator._prompt_masked("Enter current password to change API key: ")
+        except (EOFError, KeyboardInterrupt):
+            print(Fore.RED + "Password verification failed." + Style.RESET_ALL)
+            return user_store.get_decrypted_api_key("") or ""
+        if user_store.verify_password(current_password, password_hash, password_salt):
+            password_verified = True
+            break
+        print(f"Password incorrect ({attempt}/3)")
+    
+    if not password_verified:
         print(Fore.RED + "Password verification failed." + Style.RESET_ALL)
         logger_obj.log_event(
             {
@@ -378,12 +412,12 @@ def handle_change_api_key(authenticator: Authenticator, user_store: UserStore, l
                 "command_output": "Password verification failed",
             }
         )
-        return (user_store.load() or {}).get("api_key", "")
+        return user_store.get_decrypted_api_key(current_password) or ""
 
     new_key = authenticator.prompt_api_key("Enter new OpenRouter API key: ")
     if not new_key:
         print(Fore.RED + "API key update cancelled." + Style.RESET_ALL)
-        return (user_store.load() or {}).get("api_key", "")
+        return user_store.get_decrypted_api_key(current_password) or ""
 
     print(Fore.CYAN + "Validating new API key with OpenRouter..." + Style.RESET_ALL)
     client = OpenRouterClient(api_key=new_key)
@@ -401,9 +435,9 @@ def handle_change_api_key(authenticator: Authenticator, user_store: UserStore, l
                 "command_output": f"API key validation failed: {exc}",
             }
         )
-        return (user_store.load() or {}).get("api_key", "")
+        return user_store.get_decrypted_api_key(current_password) or ""
 
-    user_store.update_api_key(new_key)
+    user_store.update_api_key(new_key, current_password)
     print(Fore.GREEN + "API key updated successfully." + Style.RESET_ALL)
     logger_obj.log_event(
         {
@@ -420,7 +454,28 @@ def handle_change_api_key(authenticator: Authenticator, user_store: UserStore, l
 
 def handle_change_password(authenticator: Authenticator, user_store: UserStore, logger_obj: ActivityLogger) -> None:
     print(Fore.YELLOW + "Change password requested." + Style.RESET_ALL)
-    if not verify_current_password(authenticator, user_store, "Enter current password: "):
+    
+    user_data = user_store.load() or {}
+    password_hash = user_data.get("password_hash", "")
+    password_salt = user_data.get("password_salt", "")
+    if not password_hash or not password_salt:
+        print(Fore.RED + "User profile is missing." + Style.RESET_ALL)
+        return
+    
+    current_password = None
+    password_verified = False
+    for attempt in range(1, 4):
+        try:
+            current_password = authenticator._prompt_masked("Enter current password: ")
+        except (EOFError, KeyboardInterrupt):
+            print(Fore.RED + "Current password verification failed." + Style.RESET_ALL)
+            return
+        if user_store.verify_password(current_password, password_hash, password_salt):
+            password_verified = True
+            break
+        print(f"Password incorrect ({attempt}/3)")
+    
+    if not password_verified:
         print(Fore.RED + "Current password verification failed." + Style.RESET_ALL)
         logger_obj.log_event(
             {
@@ -439,7 +494,7 @@ def handle_change_password(authenticator: Authenticator, user_store: UserStore, 
         print(Fore.RED + "Password update cancelled." + Style.RESET_ALL)
         return
 
-    user_store.update_password(new_password)
+    user_store.update_password(current_password, new_password)
     print(Fore.GREEN + "Password updated successfully." + Style.RESET_ALL)
     logger_obj.log_event(
         {
